@@ -276,8 +276,8 @@ class NotionHelper:
                 self.get_day_relation_id(date),
             ]
         )
-        properties["全部"] = get_relation(
-            [
-                self.get_relation_id("全部",self.all_database_id,TARGET_ICON_URL),
-            ]
-        )
+        # properties["全部"] = get_relation(
+        #     [
+        #         self.get_relation_id("全部",self.all_database_id,TARGET_ICON_URL),
+        #     ]
+        # )
