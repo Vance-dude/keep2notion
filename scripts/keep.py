@@ -13,6 +13,7 @@ from config import workout_properties_type_dict
 LOGIN_API = "https://api.gotokeep.com/v1.1/users/login"
 DATA_API = "https://api.gotokeep.com/pd/v3/stats/detail?dateUnit=all&type=all&lastDate={last_date}"
 LOG_API = "https://api.gotokeep.com/pd/v3/{type}log/{id}"
+WEIGHT ="https://api.gotokeep.com/feynman/v3/data-center/sub/body-data/detail?indicatorType=WEIGHT&pageSize=10"
 
 keep_headers = {
     "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:78.0) Gecko/20100101 Firefox/78.0",
@@ -34,6 +35,64 @@ def login():
     else:
         print(r.text)
         return None
+
+def get_weight_data():
+    results = []
+    next_page_token = None
+    while True:
+        url = WEIGHT
+        if next_page_token:
+            url += f"&nextPageToken={next_page_token}"
+        
+        response = requests.get(url, headers=keep_headers)
+        if response.ok:
+            data = response.json().get("data", {})
+            results.extend(data.get("list", []))
+            if not data.get("hasNextPage"):
+                break
+            next_page_token = data.get("nextPageToken")
+        else:
+            print("获取数据失败:", response.text)
+            break
+    return results
+
+
+def insert_weight_data_to_notion(weight_data):
+    # 获取 Notion 数据库中的所有数据
+    existing_ids = set()
+    notion_weights = notion_helper.query_all(database_id=notion_helper.weight_database_id)
+    for item in notion_weights:
+        if item.get("properties").get("id"):
+            existing_ids.add(item.get("properties").get("id").get("rich_text")[0].get("plain_text"))
+
+    # 遍历数据并插入到 Notion
+    for entry in weight_data:
+        entry_id = entry.get("id")
+        if entry_id in existing_ids:
+            continue  # 跳过已存在的数据
+        # 准备 Notion 数据库属性
+        properties = {
+            "id": {"rich_text": [{"text": {"content": entry_id}}]},
+            "时间": {"date": {"start": pendulum.from_timestamp(entry["time"]["sampleEndTime"] / 1000, tz='Asia/Shanghai').to_iso8601_string()}},
+            "体重": {"number": entry["value"]},
+            "来源": {"title": [{"text": {"content": entry["source"]["displayName"]}}]},
+            "单位": {"rich_text": [{"text": {"content": entry["indicatorUnit"]}}]},
+        }
+        icon_url = entry["source"].get("iconUrl")
+        if icon_url:
+            icon = utils.get_icon(icon_url)
+            # 插入数据到 Notion
+            notion_helper.client.pages.create(
+                parent={"database_id": notion_helper.weight_database_id},
+                properties=properties,
+                cover=icon, icon=icon
+            )
+        else:
+            notion_helper.client.pages.create(
+                parent={"database_id": notion_helper.weight_database_id},
+                properties=properties        
+            )
+
 
 
 def get_run_id():
@@ -70,8 +129,6 @@ def get_run_data(log):
         LOG_API.format(type=log.get("type"), id=log.get("id")), headers=keep_headers
     )
     if r.ok:
-        with open("1.json", "w") as f:
-            f.write(json.dumps(r.json(), indent=4, ensure_ascii=False))
         data = r.json().get("data")
         workout = {}
         end_time = pendulum.from_timestamp(
@@ -102,7 +159,6 @@ def get_run_data(log):
 
 
 def add_to_notion(workout, end_time, icon, cover):
-    print(workout)
     properties = utils.get_properties(workout, workout_properties_type_dict)
     notion_helper.get_date_relation(properties, end_time)
     parent = {
@@ -128,11 +184,16 @@ if __name__ == "__main__":
     notion_helper = NotionHelper()
     s = get_lastest()
     logs = login()
+    weight_data = get_weight_data()
+    insert_weight_data_to_notion(weight_data)
     if logs:
         # 按照结束时间倒序排序
         logs = sorted(logs, key=lambda x: x["endTime"])
         for log in logs:
             id = log.get("id")
             if id in s:
+                continue
+            #去掉重复数据
+            if log.get("isDoubtful"):
                 continue
             get_run_data(log)
